@@ -167,6 +167,18 @@
   .holiday-item:last-child{border-bottom:none;}
   .holiday-item button{background:none; border:none; color:var(--red); cursor:pointer;}
   .schedule-note{font-size:12px; color:var(--text-dim); line-height:1.6; background:var(--panel-2); border-radius:10px; padding:12px; border:1px solid var(--border);}
+  .sched-list{display:flex; flex-direction:column;}
+  .sched-row{display:flex; align-items:center; justify-content:space-between; padding:9px 0; border-bottom:1px solid var(--border); gap:8px;}
+  .sched-row:last-child{border-bottom:none;}
+  .sched-day{display:flex; align-items:center; gap:8px; font-size:13px; color:var(--text); flex-shrink:0;}
+  .sched-day input[type="checkbox"]{width:16px; height:16px; accent-color:var(--accent);}
+  .sched-times{display:flex; align-items:center; gap:6px;}
+  .sched-times input[type="time"]{
+    background:var(--bg); border:1px solid var(--border); color:var(--text); border-radius:8px;
+    padding:6px 6px; font-family:var(--mono); font-size:12px; width:88px;
+  }
+  .sched-times input[type="time"]:disabled{opacity:0.35;}
+  .sched-sep{color:var(--text-dim); font-size:12px;}
   .danger-btn{
     width:100%; background:none; border:1px solid var(--red); color:var(--red); padding:11px; border-radius:10px;
     font-size:13px; cursor:pointer; margin-top:6px;
@@ -223,7 +235,16 @@
 <script>
 /* ================= STATE & PERSISTENCE ================= */
 const STORAGE_KEY = 'ponto-app-state-v1';
-let state = { rate: 7.44, punches: {}, holidays: {} };
+const DEFAULT_SCHEDULE = {
+  0:{enabled:false, start:'07:00', end:'16:00'}, // domingo
+  1:{enabled:true,  start:'07:00', end:'17:00'}, // segunda
+  2:{enabled:true,  start:'07:00', end:'17:00'}, // terça
+  3:{enabled:true,  start:'07:00', end:'17:00'}, // quarta
+  4:{enabled:true,  start:'07:00', end:'17:00'}, // quinta
+  5:{enabled:true,  start:'07:00', end:'16:00'}, // sexta
+  6:{enabled:false, start:'07:00', end:'12:00'}  // sábado
+};
+let state = { rate: 7.44, punches: {}, holidays: {}, schedule: JSON.parse(JSON.stringify(DEFAULT_SCHEDULE)) };
 let loaded = false;
 let tab = 'hoje';
 let historyMonth = new Date(); historyMonth.setDate(1);
@@ -234,7 +255,14 @@ async function loadState(){
     const res = await window.storage.get(STORAGE_KEY, false);
     if(res && res.value){
       const parsed = JSON.parse(res.value);
-      state = Object.assign({rate:7.44, punches:{}, holidays:{}}, parsed);
+      state = Object.assign({rate:7.44, punches:{}, holidays:{}, schedule: JSON.parse(JSON.stringify(DEFAULT_SCHEDULE))}, parsed);
+      const mergedSchedule = JSON.parse(JSON.stringify(DEFAULT_SCHEDULE));
+      if(parsed.schedule){
+        Object.keys(mergedSchedule).forEach(dow=>{
+          if(parsed.schedule[dow]) mergedSchedule[dow] = Object.assign({}, mergedSchedule[dow], parsed.schedule[dow]);
+        });
+      }
+      state.schedule = mergedSchedule;
     }
   }catch(e){ /* no data yet */ }
   loaded = true;
@@ -269,20 +297,24 @@ const WEEKDAY_LABEL = ['Domingo','Segunda','Terça','Quarta','Quinta','Sexta','S
 const WEEKDAY_SHORT = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
 const MONTH_LABEL = ['janeiro','fevereiro','março','abril','maio','junho','julho','agosto','setembro','outubro','novembro','dezembro'];
 
+function timeToMinutes(t){ const [h,m] = (t||'0:0').split(':').map(Number); return h*60+m; }
+
 function expectedHours(dateKey){
   const dow = dayOfWeek(dateKey);
-  if(dow>=1 && dow<=4) return 10; // seg-qui 07-17
-  if(dow===5) return 9; // sex 07-16
-  return 0;
+  const s = state.schedule[dow];
+  if(!s || !s.enabled) return 0;
+  const mins = timeToMinutes(s.end) - timeToMinutes(s.start);
+  return Math.max(0, mins/60);
 }
 function dayType(dateKey){
   if(state.holidays[dateKey]) return 'holiday';
   const dow = dayOfWeek(dateKey);
+  const s = state.schedule[dow];
+  if(s && s.enabled) return 'weekday';
   if(dow===0) return 'sunday';
-  if(dow===6) return 'saturday';
-  return 'weekday';
+  return 'restday'; // dia não escalado (ex: sábado ou qualquer dia desmarcado na jornada)
 }
-const TYPE_LABEL = {weekday:'Dia útil', saturday:'Sábado', sunday:'Domingo', holiday:'Feriado'};
+const TYPE_LABEL = {weekday:'Dia útil', restday:'Dia de folga', sunday:'Domingo', holiday:'Feriado'};
 
 // pairs punches for a day, returns worked hours + breakdown + list sorted + openSince (if odd count & day is today)
 function computeDay(dateKey){
@@ -314,7 +346,7 @@ function computeDay(dateKey){
     const exp = expectedHours(dateKey);
     normalH = Math.min(worked, exp);
     e50 = Math.max(0, worked - exp);
-  } else if(type === 'saturday'){
+  } else if(type === 'restday'){
     e60 = worked;
   } else { // sunday or holiday
     e100 = worked;
@@ -380,10 +412,35 @@ function removeHoliday(dateVal){
 
 function resetAll(){
   if(confirm('Isso vai apagar todas as marcações, feriados e configurações. Confirmar?')){
-    state = {rate:7.44, punches:{}, holidays:{}};
+    state = {rate:7.44, punches:{}, holidays:{}, schedule: JSON.parse(JSON.stringify(DEFAULT_SCHEDULE))};
     saveState();
     render();
   }
+}
+
+function toggleSchedInputs(dow){
+  const enabled = document.getElementById('schedEnabled'+dow).checked;
+  document.getElementById('schedStart'+dow).disabled = !enabled;
+  document.getElementById('schedEnd'+dow).disabled = !enabled;
+}
+
+function saveSchedule(){
+  const newSchedule = {};
+  let error = false;
+  [0,1,2,3,4,5,6].forEach(dow=>{
+    const enabled = document.getElementById('schedEnabled'+dow).checked;
+    const start = document.getElementById('schedStart'+dow).value || '00:00';
+    const end = document.getElementById('schedEnd'+dow).value || '00:00';
+    if(enabled && timeToMinutes(end) <= timeToMinutes(start)) error = true;
+    newSchedule[dow] = {enabled, start, end};
+  });
+  if(error){
+    alert('Em cada dia marcado, o horário final precisa ser depois do horário inicial.');
+    return;
+  }
+  state.schedule = newSchedule;
+  saveState();
+  render();
 }
 
 function setTab(t){ tab = t; showManualForm=false; render(); }
@@ -503,8 +560,8 @@ function renderHistorico(){
       <div class="big-val">${fmtMoney(total)}</div>
       <div class="sub">total do mês · ${fmtHours(workedTotal)} trabalhadas</div>
       <div class="breakdown-line"><span>Horas normais</span><span>${fmtHours(normalH)} · ${fmtMoney(normalH*state.rate)}</span></div>
-      <div class="breakdown-line"><span>Extra 50% (seg–sex)</span><span>${fmtHours(e50)} · ${fmtMoney(e50*state.rate*1.5)}</span></div>
-      <div class="breakdown-line"><span>Extra 60% (sábado)</span><span>${fmtHours(e60)} · ${fmtMoney(e60*state.rate*1.6)}</span></div>
+      <div class="breakdown-line"><span>Extra 50% (além da jornada)</span><span>${fmtHours(e50)} · ${fmtMoney(e50*state.rate*1.5)}</span></div>
+      <div class="breakdown-line"><span>Extra 60% (dia de folga)</span><span>${fmtHours(e60)} · ${fmtMoney(e60*state.rate*1.6)}</span></div>
       <div class="breakdown-line"><span>Extra 100% (dom/feriado)</span><span>${fmtHours(e100)} · ${fmtMoney(e100*state.rate*2)}</span></div>
     </div>
 
@@ -523,6 +580,23 @@ function renderConfig(){
       <button onclick="removeHoliday('${h}')">Remover</button>
     </div>`).join('') : '<div class="empty">Nenhum feriado cadastrado.</div>';
 
+  const dayOrder = [1,2,3,4,5,6,0]; // segunda ... domingo
+  const scheduleRows = dayOrder.map(dow=>{
+    const s = state.schedule[dow];
+    return `
+      <div class="sched-row">
+        <label class="sched-day">
+          <input type="checkbox" id="schedEnabled${dow}" ${s.enabled?'checked':''} onchange="toggleSchedInputs(${dow})">
+          <span>${WEEKDAY_LABEL[dow]}</span>
+        </label>
+        <div class="sched-times">
+          <input type="time" id="schedStart${dow}" value="${s.start}" ${s.enabled?'':'disabled'}>
+          <span class="sched-sep">–</span>
+          <input type="time" id="schedEnd${dow}" value="${s.end}" ${s.enabled?'':'disabled'}>
+        </div>
+      </div>`;
+  }).join('');
+
   return `
     <div class="card">
       <h2>Valor da hora</h2>
@@ -531,13 +605,18 @@ function renderConfig(){
         <input type="text" inputmode="decimal" id="rateInput" value="${state.rate.toFixed(2)}">
         <button class="save-btn" onclick="setRate(document.getElementById('rateInput').value)">Salvar valor da hora</button>
       </div>
-      <div class="schedule-note">
-        Jornada padrão considerada:<br>
-        Segunda a quinta: 07:00–17:00 (10h)<br>
-        Sexta: 07:00–16:00 (9h)<br>
-        Sábado: só conta se você bater ponto — 100% extra a 60%<br>
-        Domingo e feriados: 100% extra a 100%<br>
-        Horas além da jornada em dia útil: extra a 50%
+    </div>
+
+    <div class="card">
+      <h2>Jornada de trabalho</h2>
+      <div class="sched-list">${scheduleRows}</div>
+      <button class="save-btn" onclick="saveSchedule()">Salvar jornada</button>
+      <div class="schedule-note" style="margin-top:12px">
+        Marque os dias em que você trabalha normalmente e o horário de cada um.<br>
+        Dia marcado: horas dentro do horário = normal, além dele = extra a 50%.<br>
+        Domingo desmarcado: qualquer hora trabalhada = extra a 100%.<br>
+        Outros dias desmarcados (ex.: sábado): extra a 60%, se você bater ponto.<br>
+        Feriados cadastrados sempre valem extra a 100%, mesmo em dia marcado.
       </div>
     </div>
 
