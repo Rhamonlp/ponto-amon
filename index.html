@@ -250,6 +250,36 @@ let tab = 'hoje';
 let historyMonth = new Date(); historyMonth.setDate(1);
 let showManualForm = false;
 
+/* ---- importação única das marcações do espelho de ponto (16/07 a 25/07/2026) ---- */
+const SEED_KEY = 'seed_espelho_20260716_20260725';
+const SEED_PUNCHES = {
+  '2026-07-16': [{type:'in', hhmm:'07:04'}, {type:'out', hhmm:'20:15'}],
+  '2026-07-17': [{type:'in', hhmm:'06:55'}, {type:'out', hhmm:'19:39'}],
+  '2026-07-18': [{type:'in', hhmm:'07:07'}, {type:'out', hhmm:'18:14'}],
+  '2026-07-20': [{type:'in', hhmm:'06:59'}, {type:'out', hhmm:'17:06'}],
+  '2026-07-21': [{type:'in', hhmm:'07:00'}, {type:'out', hhmm:'19:23'}],
+  '2026-07-22': [{type:'in', hhmm:'06:49'}, {type:'out', hhmm:'19:04'}],
+  '2026-07-23': [{type:'in', hhmm:'06:45'}] // só entrada registrada no espelho
+  // 19/07, 24/07 e 25/07 não tinham marcação no espelho
+};
+function applySeedPunches(){
+  if(state[SEED_KEY]) return; // já importado antes, não repete
+  let changed = false;
+  Object.keys(SEED_PUNCHES).forEach(dateKey=>{
+    if(state.punches[dateKey] && state.punches[dateKey].length) return; // não sobrescreve dia já preenchido
+    const entries = SEED_PUNCHES[dateKey].map(p=>{
+      const [hh,mm] = p.hhmm.split(':').map(Number);
+      const d = new Date(dateKey+'T00:00:00');
+      d.setHours(hh, mm, 0, 0);
+      return {id: Date.now()+'-'+Math.random().toString(36).slice(2,7), type:p.type, time:d.getTime()};
+    });
+    state.punches[dateKey] = entries;
+    changed = true;
+  });
+  state[SEED_KEY] = true;
+  if(changed) saveState();
+}
+
 async function loadState(){
   try{
     const res = await window.storage.get(STORAGE_KEY, false);
@@ -265,6 +295,7 @@ async function loadState(){
       state.schedule = mergedSchedule;
     }
   }catch(e){ /* no data yet */ }
+  applySeedPunches();
   loaded = true;
   render();
 }
